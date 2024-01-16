@@ -16,6 +16,10 @@ fn main() {
         .expect("Error getting target") {
         println!("Found pid {}", proc.pid);
         proc.print();
+        ps_utils::get_child_processes(proc.pid)
+            .expect("Error getting child processes")
+            .iter()
+            .for_each(|p| { p.print() });
     }
     else {
         println!("Target '{}' did not match any running PIDs or executables", target);
