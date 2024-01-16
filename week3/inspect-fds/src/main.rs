@@ -1,5 +1,4 @@
 use std::env;
-use nix::libc::printf;
 
 mod open_file;
 mod process;
