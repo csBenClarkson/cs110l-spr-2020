@@ -62,6 +62,7 @@ impl Process {
                 }
             }
         }
+        println!();
     }
 }
 
