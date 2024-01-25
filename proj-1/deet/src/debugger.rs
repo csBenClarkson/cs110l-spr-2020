@@ -1,6 +1,7 @@
 use std::fmt::Display;
-use libc::{exit, signal, waitpid};
+use libc::{exit, printf, signal, waitpid};
 use nix::sys::signal::Signal;
+use object::SectionKind::Debug;
 use crate::debugger_command::DebuggerCommand;
 use crate::inferior::{Inferior, Status};
 use rustyline::error::ReadlineError;
@@ -32,6 +33,17 @@ impl Debugger {
         }
     }
 
+    fn print_status(status: Option<Status>) {
+        match status {
+            Some(Status::Exited(code)) => { println!("Child exited (status {})", code); },
+            Some(Status::Stopped(sig, pc)) => {
+                println!("Child stopped at 0x{:x} (signal {})", pc, sig);
+            }
+            None => { println!("continue fails!"); }
+            _ => {}     // other cases
+        }
+    }
+
     pub fn run(&mut self) {
         loop {
             match self.get_next_command() {
@@ -39,18 +51,14 @@ impl Debugger {
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        match self.inferior.as_mut().unwrap().go().ok() {
-                            Some(Status::Exited(code)) => { println!("Child exited (status {})", code); },
-                            Some(Status::Stopped(sig, pc)) => {
-                                println!("Child stopped at {:X} (signal {})", pc, sig);
-                            }
-                            None => { println!("continue fails!") }
-                            _ => {}     // other cases
-                        }
+                        Debugger::print_status(self.inferior.as_mut().unwrap().go().ok());
                     } else {
                         println!("Error starting subprocess");
                     }
                 }
+                DebuggerCommand::Continue => {
+                    Debugger::print_status(self.inferior.as_mut().unwrap().go().ok());
+                },
                 DebuggerCommand::Quit => {
                     return;
                 }
