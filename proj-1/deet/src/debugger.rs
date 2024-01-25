@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use libc::{exit, signal, waitpid};
 use nix::sys::signal::Signal;
 use crate::debugger_command::DebuggerCommand;
@@ -39,7 +40,10 @@ impl Debugger {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         match self.inferior.as_mut().unwrap().go().ok() {
-                            Some(Status::Exited(code)) => { println!("Child exited (status {})", code); }
+                            Some(Status::Exited(code)) => { println!("Child exited (status {})", code); },
+                            Some(Status::Stopped(sig, pc)) => {
+                                println!("Child stopped at {:X} (signal {})", pc, sig);
+                            }
                             None => { println!("continue fails!") }
                             _ => {}     // other cases
                         }
