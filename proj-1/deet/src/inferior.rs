@@ -1,9 +1,12 @@
+use std::io;
 use std::os::unix::process::CommandExt;
 use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{Pid, ResGid};
 use std::process::{Child, Command};
+use libc::wait;
+use nix::sys::ptrace::kill;
 use nix::sys::signal::Signal;
 
 pub enum Status {
@@ -71,6 +74,11 @@ impl Inferior {
 
     pub fn go(&self) -> Result<Status, nix::Error> {
         ptrace::cont(self.pid(), None)?;
+        self.wait(None)
+    }
+
+    pub fn kill(&mut self) -> Result<Status, nix::Error> {
+        self.child.kill().expect("fatal: program cannot be killed.");
         self.wait(None)
     }
 }
