@@ -1,5 +1,6 @@
 use std::fmt::Display;
 use libc::{exit, printf, signal, waitpid};
+use nix::sys::ptrace::cont;
 use nix::sys::signal::Signal;
 use object::SectionKind::Debug;
 use crate::debugger_command::DebuggerCommand;
@@ -49,6 +50,9 @@ impl Debugger {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
+                        if self.inferior.is_some() {
+                            self.inferior.as_mut().unwrap().kill().ok();
+                        }
                         // Create the inferior
                         self.inferior = Some(inferior);
                         Debugger::print_status(self.inferior.as_mut().unwrap().go().ok());
@@ -57,9 +61,16 @@ impl Debugger {
                     }
                 }
                 DebuggerCommand::Continue => {
+                    if self.inferior.is_none() {
+                        println!("The program is not being run.");
+                        continue;
+                    }
                     Debugger::print_status(self.inferior.as_mut().unwrap().go().ok());
                 },
                 DebuggerCommand::Quit => {
+                    if self.inferior.is_some() {
+                        self.inferior.as_mut().unwrap().kill().ok();
+                    }
                     return;
                 }
             }
