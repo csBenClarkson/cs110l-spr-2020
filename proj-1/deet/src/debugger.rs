@@ -1,7 +1,10 @@
+use libc::{exit, signal, waitpid};
+use nix::sys::signal::Signal;
 use crate::debugger_command::DebuggerCommand;
-use crate::inferior::Inferior;
+use crate::inferior::{Inferior, Status};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use crate::inferior;
 
 pub struct Debugger {
     target: String,
@@ -35,9 +38,11 @@ impl Debugger {
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        // TODO (milestone 1): make the inferior run
-                        // You may use self.inferior.as_mut().unwrap() to get a mutable reference
-                        // to the Inferior object
+                        match self.inferior.as_mut().unwrap().go().ok() {
+                            Some(Status::Exited(code)) => { println!("Child exited (status {})", code); }
+                            None => { println!("continue fails!") }
+                            _ => {}     // other cases
+                        }
                     } else {
                         println!("Error starting subprocess");
                     }
