@@ -1,25 +1,33 @@
 use std::fmt::Display;
-use libc::{exit, printf, signal, waitpid};
-use nix::sys::ptrace::cont;
-use nix::sys::signal::Signal;
-use object::SectionKind::Debug;
 use crate::debugger_command::DebuggerCommand;
 use crate::inferior::{Inferior, Status};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use crate::inferior;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
 
 pub struct Debugger {
     target: String,
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
+    debug_data: DwarfData
 }
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
         // TODO (milestone 3): initialize the DwarfData
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val)=> val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                println!("Could not open file {}", target);
+                std::process::exit(1);
+            }
+            Err(DwarfError::DwarfFormatError(err)) => {
+                println!("Could not debugging symbols from {}: {:?}", target, err);
+                std::process::exit(1);
+            }
+        };
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -31,6 +39,7 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
+            debug_data,
         }
     }
 
@@ -38,7 +47,7 @@ impl Debugger {
         match status {
             Some(Status::Exited(code)) => { println!("Child exited (status {})", code); return status; },
             Some(Status::Stopped(sig, pc)) => {
-                println!("Child stopped at 0x{:x} (signal {})", pc, sig);
+                println!("Child stopped at {:#x} (signal {})", pc, sig);
                 return status;
             }
             None => { println!("continue fails!"); None }
@@ -77,7 +86,7 @@ impl Debugger {
                         println!("The program is not being run.");
                         continue;
                     }
-                    self.inferior.as_ref().unwrap().print_backtrace().expect("");
+                    self.inferior.as_ref().unwrap().print_backtrace(&self.debug_data).expect("");
                 }
                 DebuggerCommand::Quit => {
                     if self.inferior.is_some() {

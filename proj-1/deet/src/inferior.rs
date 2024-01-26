@@ -1,13 +1,11 @@
-use std::io;
 use std::os::unix::process::CommandExt;
 use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{Pid, ResGid};
 use std::process::{Child, Command};
-use libc::wait;
-use nix::sys::ptrace::kill;
 use nix::sys::signal::Signal;
+use crate::dwarf_data::{DwarfData, Line};
 
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
@@ -78,12 +76,27 @@ impl Inferior {
     }
 
     pub fn kill(&mut self) -> Result<Status, nix::Error> {
-        self.child.kill().expect("fatal: program cannot be killed.");
+        if let Err(err) = self.child.kill() {
+            println!("command cannot be killed.");
+            return Err(nix::Error::from_i32(err.raw_os_error().unwrap()));
+        }
         self.wait(None)
     }
 
-    pub fn print_backtrace(&self) -> Result<(), nix::Error> {
-        println!("hello world!");
+    pub fn print_backtrace(&self, debug_data: &DwarfData) -> Result<(), nix::Error> {
+        let regs = ptrace::getregs(self.pid())?;
+        let mut rip = regs.rip as usize;
+        let mut rbp = regs.rbp as usize;
+        loop {
+            let func = debug_data.get_function_from_addr(rip)
+                .unwrap_or(String::from("Unrecognized function"));
+            let line = debug_data.get_line_from_addr(rip)
+                .unwrap_or(Line {file: String::from("Unrecognized file"), number: 0, address: 0 });
+            println!("{} ({})", func, line);
+            if func == "main" { break }
+            rip = ptrace::read(self.pid(), (rbp + 8) as ptrace::AddressType)? as usize;
+            rbp = ptrace::read(self.pid(), rbp as ptrace::AddressType)? as usize;
+        }
         Ok(())
     }
 }
