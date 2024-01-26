@@ -43,11 +43,14 @@ impl Debugger {
         }
     }
 
-    fn print_status(status: Option<Status>) -> Option<Status> {
+    fn print_status(&self, status: Option<Status>) -> Option<Status> {
         match status {
             Some(Status::Exited(code)) => { println!("Child exited (status {})", code); return status; },
-            Some(Status::Stopped(sig, pc)) => {
-                println!("Child stopped at {:#x} (signal {})", pc, sig);
+            Some(Status::Stopped(sig, rip)) => {
+                println!("Child stopped (signal {})", sig);
+                if let Some(line) = self.debug_data.get_line_from_addr(rip) {
+                    println!("Stopped at {}", line);
+                }
                 return status;
             }
             None => { println!("continue fails!"); None }
@@ -65,7 +68,8 @@ impl Debugger {
                         }
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        if let Some(Status::Exited(_)) = Debugger::print_status(self.inferior.as_mut().unwrap().go().ok()) {
+                        let status = self.inferior.as_mut().unwrap().go().ok();
+                        if let Some(Status::Exited(_)) = self.print_status(status) {
                             self.inferior = None;
                         }
                     } else {
@@ -77,7 +81,8 @@ impl Debugger {
                         println!("The program is not being run.");
                         continue;
                     }
-                    if let Some(Status::Exited(_)) = Debugger::print_status(self.inferior.as_mut().unwrap().go().ok()) {
+                    let status = self.inferior.as_mut().unwrap().go().ok();
+                    if let Some(Status::Exited(_)) = self.print_status(status) {
                         self.inferior = None;
                     }
                 },
