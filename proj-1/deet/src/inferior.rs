@@ -81,4 +81,9 @@ impl Inferior {
         self.child.kill().expect("fatal: program cannot be killed.");
         self.wait(None)
     }
+
+    pub fn print_backtrace(&self) -> Result<(), nix::Error> {
+        println!("hello world!");
+        Ok(())
+    }
 }

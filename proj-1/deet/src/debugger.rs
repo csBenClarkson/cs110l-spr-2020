@@ -34,14 +34,15 @@ impl Debugger {
         }
     }
 
-    fn print_status(status: Option<Status>) {
+    fn print_status(status: Option<Status>) -> Option<Status> {
         match status {
-            Some(Status::Exited(code)) => { println!("Child exited (status {})", code); },
+            Some(Status::Exited(code)) => { println!("Child exited (status {})", code); return status; },
             Some(Status::Stopped(sig, pc)) => {
                 println!("Child stopped at 0x{:x} (signal {})", pc, sig);
+                return status;
             }
-            None => { println!("continue fails!"); }
-            _ => {}     // other cases
+            None => { println!("continue fails!"); None }
+            _ => { None }     // other cases
         }
     }
 
@@ -55,7 +56,9 @@ impl Debugger {
                         }
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        Debugger::print_status(self.inferior.as_mut().unwrap().go().ok());
+                        if let Some(Status::Exited(_)) = Debugger::print_status(self.inferior.as_mut().unwrap().go().ok()) {
+                            self.inferior = None;
+                        }
                     } else {
                         println!("Error starting subprocess");
                     }
@@ -65,8 +68,17 @@ impl Debugger {
                         println!("The program is not being run.");
                         continue;
                     }
-                    Debugger::print_status(self.inferior.as_mut().unwrap().go().ok());
+                    if let Some(Status::Exited(_)) = Debugger::print_status(self.inferior.as_mut().unwrap().go().ok()) {
+                        self.inferior = None;
+                    }
                 },
+                DebuggerCommand::Backtrace => {
+                    if self.inferior.is_none() {
+                        println!("The program is not being run.");
+                        continue;
+                    }
+                    self.inferior.as_ref().unwrap().print_backtrace().expect("");
+                }
                 DebuggerCommand::Quit => {
                     if self.inferior.is_some() {
                         self.inferior.as_mut().unwrap().kill().ok();
