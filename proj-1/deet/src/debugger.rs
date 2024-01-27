@@ -10,7 +10,8 @@ pub struct Debugger {
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
-    debug_data: DwarfData
+    debug_data: DwarfData,
+    break_points: Vec<usize>,
 }
 
 impl Debugger {
@@ -40,6 +41,7 @@ impl Debugger {
             readline,
             inferior: None,
             debug_data,
+            break_points: Vec::new(),
         }
     }
 
@@ -58,11 +60,20 @@ impl Debugger {
         }
     }
 
+    fn parse_address(addr: &str) -> Option<usize> {
+        let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+            &addr[2..]
+        } else {
+            &addr
+        };
+        usize::from_str_radix(addr_without_0x, 16).ok()
+    }
+
     pub fn run(&mut self) {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.break_points) {
                         if self.inferior.is_some() {
                             self.inferior.as_mut().unwrap().kill().ok();
                         }
@@ -92,6 +103,16 @@ impl Debugger {
                         continue;
                     }
                     self.inferior.as_ref().unwrap().print_backtrace(&self.debug_data).expect("");
+                },
+                DebuggerCommand::Breakpoint(target) => {
+                    if target.starts_with('*') {
+                        if let Some(addr) = Debugger::parse_address(&target[1..]) {
+                            self.break_points.push(addr);
+                            println!("Set breakpoint {} at {:#x}", self.break_points.len()-1, addr);
+                        }
+                        else { println!("Invalid address."); }
+                    }
+                    else { println!("Invalid breakpoint target."); }
                 }
                 DebuggerCommand::Quit => {
                     if self.inferior.is_some() {
