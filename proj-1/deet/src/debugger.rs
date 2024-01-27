@@ -29,7 +29,6 @@ impl Debugger {
                 std::process::exit(1);
             }
         };
-        debug_data.print();
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<(), FileHistory>::new().expect("Create editor fails.");
@@ -109,14 +108,26 @@ impl Debugger {
                     if target.starts_with('*') {
                         if let Some(addr) = Debugger::parse_address(&target[1..]) {
                             self.break_points.push(addr);
-                            if self.inferior.is_some() {
-                                self.inferior.as_mut().unwrap().install_breakpoints(&self.break_points);
-                            }
                             println!("Set breakpoint {} at {:#x}", self.break_points.len()-1, addr);
                         }
                         else { println!("Invalid address."); }
                     }
+                    else if let Ok(line_no) = target.parse::<usize>() {
+                        if let Some(addr) = self.debug_data.get_addr_for_line(None, line_no) {
+                            self.break_points.push(addr);
+                            println!("Set breakpoint {} at {:#x}", self.break_points.len()-1, addr);
+                        }
+                    }
+                    else if let Some(function) = self.debug_data.find_function(target) {
+                        if let Some(addr) = self.debug_data.get_addr_for_function(None, &function) {
+                            self.break_points.push(addr);
+                            println!("Set breakpoint {} at {:#x}", self.break_points.len()-1, addr);
+                        }
+                    }
                     else { println!("Invalid breakpoint target."); }
+                    if self.inferior.is_some() {
+                        self.inferior.as_mut().unwrap().install_breakpoints(&self.break_points);
+                    }
                 }
                 DebuggerCommand::Quit => {
                     if self.inferior.is_some() {
@@ -151,7 +162,7 @@ impl Debugger {
                     if line.trim().len() == 0 {
                         continue;
                     }
-                    self.readline.add_history_entry(line.as_str());
+                    let _ = self.readline.add_history_entry(line.as_str());
                     if let Err(err) = self.readline.save_history(&self.history_path) {
                         println!(
                             "Warning: failed to save history file at {}: {}",
