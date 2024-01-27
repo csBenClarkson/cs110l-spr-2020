@@ -1,11 +1,11 @@
+use std::collections::HashMap;
 use std::mem::size_of;
 use std::os::unix::process::CommandExt;
 use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{Pid, ResGid};
+use nix::unistd::Pid;
 use std::process::{Child, Command};
-use libc::select;
 use nix::sys::signal::Signal;
 use crate::dwarf_data::{DwarfData, Line};
 
@@ -33,6 +33,7 @@ fn child_traceme() -> Result<(), std::io::Error> {
 
 pub struct Inferior {
     child: Child,
+    breakpoint_map: HashMap<usize, u8>,
 }
 
 fn align_addr_to_word(addr: usize) -> usize {
@@ -65,10 +66,12 @@ impl Inferior {
             cmd.pre_exec(child_traceme);
         }
         let child = cmd.spawn().ok()?;
-        let inferior = Inferior { child };
+        let mut inferior = Inferior { child, breakpoint_map: HashMap::new() };
         let stat = inferior.wait(None).ok()?;
         if let Status::Stopped(Signal::SIGTRAP, _) = stat {
-            breakpoints.iter().for_each(|&x| { Inferior::write_byte(inferior.pid(), x, 0xccu8).ok(); })
+            breakpoints.iter().for_each(|&x| {
+                inferior.breakpoint_map.insert(x, Inferior::write_byte(inferior.pid(), x, 0xccu8).ok().unwrap());
+            })
         }
         else { return None }
         Some(inferior)
@@ -93,7 +96,34 @@ impl Inferior {
         })
     }
 
+    pub fn install_breakpoints(&mut self, breakpoints: &Vec::<usize>) {
+        breakpoints.iter().for_each(|&x| {
+            self.breakpoint_map.insert(x, Inferior::write_byte(self.pid(), x, 0xccu8).ok().unwrap());
+        })
+    }
+
     pub fn go(&self) -> Result<Status, nix::Error> {
+        let mut regs = ptrace::getregs(self.pid())?;
+
+        // if it is a call after a breakpoint (%rip = breakpoint addr + 1),
+        // restore the original byte and rewind program execution.
+        // Then execute THIS instruction, stop, and write 0xcc INT instruction back to addr.
+        if let Some((&addr, &byte)) = self.breakpoint_map.get_key_value(&((regs.rip - 1) as usize)) {
+            unsafe {
+                Inferior::write_byte(self.pid(), addr, byte)?;
+            }
+            regs.rip = regs.rip - 1;
+            ptrace::setregs(self.pid(), regs)?;
+
+            ptrace::step(self.pid(), None)?;
+            match self.wait(None) {
+                Ok(Status::Stopped(Signal::SIGTRAP, _)) => {
+                    Inferior::write_byte(self.pid(), addr, 0xccu8)?;
+                },
+                _ => {},
+                // no need to handle Exited since next cont is called.
+            }
+        }
         ptrace::cont(self.pid(), None)?;
         self.wait(None)
     }
