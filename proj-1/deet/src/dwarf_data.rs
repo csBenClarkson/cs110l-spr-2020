@@ -3,6 +3,7 @@ use addr2line::Context;
 use object::Object;
 use std::convert::TryInto;
 use std::{fmt, fs};
+use std::fs::OpenOptions;
 
 #[derive(Debug)]
 pub enum Error {
@@ -145,6 +146,17 @@ impl DwarfData {
                 println!("  * {} (at {:#x})", line.number, line.address);
             }
         }
+    }
+
+    pub fn find_function(&self, function_name: String) -> Option<String> {
+        self.files.iter().find_map(|file| -> Option<String> {
+            file.functions.iter().find_map(|func| -> Option<String> {
+                if func.name == function_name {
+                  Some(function_name.clone())
+                }
+                else { None }
+            })
+        })
     }
 }
 

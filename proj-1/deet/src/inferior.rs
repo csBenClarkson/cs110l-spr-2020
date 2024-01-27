@@ -12,14 +12,14 @@ use crate::dwarf_data::{DwarfData, Line};
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
     /// current instruction pointer that it is stopped at.
-    Stopped(signal::Signal, usize),
+    Stopped(Signal, usize),
 
     /// Indicates inferior exited normally. Contains the exit status code.
     Exited(i32),
 
     /// Indicates the inferior exited due to a signal. Contains the signal that killed the
     /// process.
-    Signaled(signal::Signal),
+    Signaled(Signal),
 }
 
 /// This function calls ptrace with PTRACE_TRACEME to enable debugging on a process. You should use
@@ -109,9 +109,7 @@ impl Inferior {
         // restore the original byte and rewind program execution.
         // Then execute THIS instruction, stop, and write 0xcc INT instruction back to addr.
         if let Some((&addr, &byte)) = self.breakpoint_map.get_key_value(&((regs.rip - 1) as usize)) {
-            unsafe {
-                Inferior::write_byte(self.pid(), addr, byte)?;
-            }
+            Inferior::write_byte(self.pid(), addr, byte)?;
             regs.rip = regs.rip - 1;
             ptrace::setregs(self.pid(), regs)?;
 
