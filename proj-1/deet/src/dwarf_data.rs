@@ -3,6 +3,7 @@ use addr2line::Context;
 use object::Object;
 use std::convert::TryInto;
 use std::{fmt, fs};
+use std::fs::OpenOptions;
 
 #[derive(Debug)]
 pub enum Error {
@@ -30,7 +31,7 @@ impl From<gimli_wrapper::Error> for Error {
 impl DwarfData {
     pub fn from_file(path: &str) -> Result<DwarfData, Error> {
         let file = fs::File::open(path).or(Err(Error::ErrorOpeningFile))?;
-        let mmap = unsafe { memmap::Mmap::map(&file).or(Err(Error::ErrorOpeningFile))? };
+        let mmap = unsafe { memmap2::Mmap::map(&file).or(Err(Error::ErrorOpeningFile))? };
         let object = object::File::parse(&*mmap)
             .or_else(|e| Err(gimli_wrapper::Error::ObjectError(e.to_string())))?;
         let endian = if object.is_little_endian() {
@@ -146,6 +147,17 @@ impl DwarfData {
             }
         }
     }
+
+    pub fn find_function(&self, function_name: String) -> Option<String> {
+        self.files.iter().find_map(|file| -> Option<String> {
+            file.functions.iter().find_map(|func| -> Option<String> {
+                if func.name == function_name {
+                  Some(function_name.clone())
+                }
+                else { None }
+            })
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -222,5 +234,3 @@ impl fmt::Display for Line {
         write!(f, "{}:{}", self.file, self.number)
     }
 }
-
-
