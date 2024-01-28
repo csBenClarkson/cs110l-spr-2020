@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
-#[allow(unused_imports)]
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
-#[allow(unused_imports)]
 use std::{env, process, thread};
+use std::fs::OpenOptions;
+use std::thread::Thread;
 
 /// Determines whether a number is prime. This function is taken from CS 110 factor.py.
 ///
@@ -66,17 +66,34 @@ fn get_input_numbers() -> VecDeque<u32> {
     numbers
 }
 
+fn pop_from_queue(mutex: &Mutex<VecDeque<u32>>) -> Option<u32> {
+    let q = mutex.lock();
+    q.unwrap().pop_front()
+}
+
 fn main() {
     let num_threads = num_cpus::get();
     println!("Farm starting on {} CPUs", num_threads);
     let start = Instant::now();
 
-    // TODO: call get_input_numbers() and store a queue of numbers to factor
+    let mut threads = Vec::new();
+    let numbers = get_input_numbers();
+    let mutex_num = Arc::new(Mutex::new(numbers));
+    for _ in 0..num_threads {
+        let mutex_cloned = mutex_num.clone();
+        threads.push(thread::spawn(move || {
+            loop {
+                if let Some(operand) = pop_from_queue(&mutex_cloned) {
+                    factor_number(operand);
+                }
+                else { break; }
+            }
+        }))
+    }
 
-    // TODO: spawn `num_threads` threads, each of which pops numbers off the queue and calls
-    // factor_number() until the queue is empty
-
-    // TODO: join all the threads you created
+    for t in threads {
+        t.join().expect("thread join fails");
+    }
 
     println!("Total execution time: {:?}", start.elapsed());
 }
