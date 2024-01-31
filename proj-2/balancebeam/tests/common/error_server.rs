@@ -31,7 +31,7 @@ impl ErrorServer {
     pub async fn new() -> ErrorServer {
         let mut rng = rand::thread_rng();
         ErrorServer::new_at_address(format!("127.0.0.1:{}", rng.gen_range(1024..65535))).await
-    }.
+    }
 
     #[allow(dead_code)]
     pub async fn new_at_address(bind_addr_string: String) -> ErrorServer {
