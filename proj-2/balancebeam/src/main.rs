@@ -116,13 +116,14 @@ async fn connect_to_upstream(state_lock: &RwLock<ProxyState>) -> Result<TcpStrea
             upstream_idx = *state.alive_indices
                 .iter().choose(&mut rng)
                 .ok_or(std::io::Error::from(ErrorKind::NotConnected))?;
-            upstream_ip = state.upstream_addresses[upstream_idx].clone();
+            upstream_ip = &state.upstream_addresses[upstream_idx];
+            if let Ok(stream) = TcpStream::connect(upstream_ip).await {
+                return Ok(stream);
+            }
         }
 
-        if let Ok(stream) = TcpStream::connect(upstream_ip).await {
-            return Ok(stream);
-        }
-        else {
+        {
+            // scope for write lock.
             let mut state = state_lock.write().await;
             state.alive_indices.remove(&upstream_idx);
         }
