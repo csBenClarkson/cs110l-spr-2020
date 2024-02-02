@@ -1,10 +1,15 @@
 mod request;
 mod response;
 
+use std::collections::BTreeSet;
+use std::io::ErrorKind;
+use std::iter::FromIterator;
 use clap::Parser;
-use rand::{Rng, SeedableRng};
+use rand::SeedableRng;
 use tokio::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+use tokio::sync::RwLock;
+use rand::seq::IteratorRandom;
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Parser macros
 /// provide a fancy way to automatically construct a command-line argument parser.
@@ -39,6 +44,8 @@ struct ProxyState {
     max_requests_per_minute: usize,
     /// Addresses of servers that we are proxying to
     upstream_addresses: Vec<String>,
+    /// Indices of upstream_addresses that are alive.
+    alive_indices: BTreeSet<usize>,
 }
 
 #[tokio::main]
@@ -69,31 +76,57 @@ async fn main() {
     log::info!("Listening for requests on {}", options.bind);
 
     // Handle incoming connections
+    let upstream_num = options.upstream.len();
     let state = ProxyState {
         upstream_addresses: options.upstream,
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
+        alive_indices: BTreeSet::from_iter(0..upstream_num),
     };
-    let state_ref = Arc::new(state);
+
+    let state_lock = Arc::new(RwLock::new(state));
     loop {
-        if let Ok((stream, _)) = listener.accept().await {
+        if let Ok((mut client_conn, _)) = listener.accept().await {
             // Handle the connection!
-            let state = state_ref.clone();
-            tokio::task::spawn(async move { handle_connection(stream, &state).await; });
+            let state_lock_c = state_lock.clone();
+            let upstream_conn = match connect_to_upstream(&state_lock_c).await {
+                Ok(stream) => stream,
+                Err(_error) => {
+                    let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
+                    send_response(&mut client_conn, &response).await;
+                    continue;
+                }
+            };
+            tokio::task::spawn(async move {
+                handle_connection(client_conn, upstream_conn).await;
+            });
         }
     }
 }
 
-async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
+async fn connect_to_upstream(state_lock: &RwLock<ProxyState>) -> Result<TcpStream, std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
-    let upstream_idx = rng.gen_range(0..state.upstream_addresses.len());
-    let upstream_ip = &state.upstream_addresses[upstream_idx];
-    TcpStream::connect(upstream_ip).await.or_else(|err| {
-        log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
-        Err(err)
-    })
-    // TODO: implement failover (milestone 3)
+    loop {
+        let upstream_ip;
+        let upstream_idx;
+        {
+            // scope for read lock.
+            let state = state_lock.read().await;
+            upstream_idx = *state.alive_indices
+                .iter().choose(&mut rng)
+                .ok_or(std::io::Error::from(ErrorKind::NotConnected))?;
+            upstream_ip = state.upstream_addresses[upstream_idx].clone();
+        }
+
+        if let Ok(stream) = TcpStream::connect(upstream_ip).await {
+            return Ok(stream);
+        }
+        else {
+            let mut state = state_lock.write().await;
+            state.alive_indices.remove(&upstream_idx);
+        }
+    }
 }
 
 async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
@@ -105,19 +138,10 @@ async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Ve
     }
 }
 
-async fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
+async fn handle_connection(mut client_conn: TcpStream, mut upstream_conn: TcpStream) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
 
-    // Open a connection to a random destination server
-    let mut upstream_conn = match connect_to_upstream(state).await {
-        Ok(stream) => stream,
-        Err(_error) => {
-            let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
-            send_response(&mut client_conn, &response).await;
-            return;
-        }
-    };
     let upstream_ip = upstream_conn.peer_addr().unwrap().ip().to_string();
 
     // The client may now send us one or more requests. Keep trying to read requests until the
