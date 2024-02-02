@@ -6,10 +6,13 @@ use std::io::ErrorKind;
 use std::iter::FromIterator;
 use clap::Parser;
 use rand::SeedableRng;
-use tokio::net::{TcpListener, TcpStream};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use rand::seq::IteratorRandom;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
+use tokio::time;
+use std::sync::Arc;
+use std::time::Duration;
+use http::StatusCode;
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Parser macros
 /// provide a fancy way to automatically construct a command-line argument parser.
@@ -77,6 +80,7 @@ async fn main() {
 
     // Handle incoming connections
     let upstream_num = options.upstream.len();
+    let health_check_interval = options.active_health_check_interval;
     let state = ProxyState {
         upstream_addresses: options.upstream,
         active_health_check_interval: options.active_health_check_interval,
@@ -86,6 +90,34 @@ async fn main() {
     };
 
     let state_lock = Arc::new(RwLock::new(state));
+    let state_lock_c = state_lock.clone();
+    let mut interval = time::interval(Duration::from_secs(health_check_interval as u64));
+    tokio::task::spawn(async move {
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            {
+                let mut state = state_lock_c.write().await;
+                let addresses = state.upstream_addresses.clone();
+                for (index, server) in addresses.iter().enumerate() {
+                    match active_health_check(&server, &state.active_health_check_path).await {
+                        Ok(()) => { state.alive_indices.insert(index); }
+                        Err(_) => {
+                            state.alive_indices.remove(&index);
+                            log::warn!("Detected upstream server {} down", server);
+                        }
+                    }
+                }
+                // in case interval changes.
+                if state.active_health_check_interval != interval.period().as_secs() as usize {
+                    interval = time::interval(Duration::from_secs(state.active_health_check_interval as u64));
+                    interval.tick().await;
+                }
+            }
+
+        }
+    });
+
     loop {
         if let Ok((mut client_conn, _)) = listener.accept().await {
             // Handle the connection!
@@ -104,6 +136,26 @@ async fn main() {
         }
     }
 }
+
+
+async fn active_health_check(upstream_address: &String, path: &String) -> Result<(), std::io::Error> {
+    let mut upstream_conn = TcpStream::connect(upstream_address).await?;
+    let request = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(path)
+        .header("Host", upstream_conn.peer_addr().unwrap().ip().to_string())
+        .body(Vec::new())
+        .unwrap();
+    request::write_to_stream(&request, &mut upstream_conn).await?;
+    if let Ok(response) = response::read_from_stream(&mut upstream_conn, request.method()).await {
+        if response.status() != StatusCode::OK {
+            return Err(std::io::Error::from(ErrorKind::NotConnected));
+        }
+    }
+    else { return Err(std::io::Error::from(ErrorKind::NotConnected)); }
+    Ok(())
+}
+
 
 async fn connect_to_upstream(state_lock: &RwLock<ProxyState>) -> Result<TcpStream, std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
