@@ -1,7 +1,7 @@
 mod request;
 mod response;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::ErrorKind;
 use std::iter::FromIterator;
 use clap::Parser;
@@ -11,8 +11,18 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio::time;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use http::StatusCode;
+
+
+/// Get Unix timestamp (since 1970-01-01), panic if earlier that that.
+macro_rules! timestamp {
+    () => {
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("SystemTime before UNIX EPOCH!")
+                    .as_secs()
+    };
+}
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Parser macros
 /// provide a fancy way to automatically construct a command-line argument parser.
@@ -49,6 +59,8 @@ struct ProxyState {
     upstream_addresses: Vec<String>,
     /// Indices of upstream_addresses that are alive.
     alive_indices: BTreeSet<usize>,
+    /// request count info for each client. IP -> (curr_window_timestamp, prev_counter, cur_counter)
+    request_limit_table: HashMap<String, (u64, u32, u32)>
 }
 
 #[tokio::main]
@@ -87,11 +99,14 @@ async fn main() {
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
         alive_indices: BTreeSet::from_iter(0..upstream_num),
+        request_limit_table: HashMap::new(),
     };
 
     let state_lock = Arc::new(RwLock::new(state));
     let state_lock_c = state_lock.clone();
     let mut interval = time::interval(Duration::from_secs(health_check_interval as u64));
+
+    // health checker
     tokio::task::spawn(async move {
         interval.tick().await;
         loop {
@@ -114,9 +129,24 @@ async fn main() {
                     interval.tick().await;
                 }
             }
-
         }
     });
+
+    // request limit patrol
+    let state_lock_c = state_lock.clone();
+    if state_lock_c.read().await.max_requests_per_minute != 0 {
+        let mut interval = time::interval(Duration::from_secs(60));     // update per minute
+        tokio::task::spawn(async move {
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let mut state = state_lock_c.write().await;
+                state.request_limit_table.values_mut().for_each(|x| {
+                    *x = (timestamp!(), x.2, 0);
+                });
+            }
+        });
+    }
 
     loop {
         if let Ok((mut client_conn, _)) = listener.accept().await {
@@ -131,7 +161,7 @@ async fn main() {
                 }
             };
             tokio::task::spawn(async move {
-                handle_connection(client_conn, upstream_conn).await;
+                handle_connection(client_conn, upstream_conn, &state_lock_c).await;
             });
         }
     }
@@ -191,9 +221,14 @@ async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Ve
     }
 }
 
-async fn handle_connection(mut client_conn: TcpStream, mut upstream_conn: TcpStream) {
+async fn handle_connection(mut client_conn: TcpStream, mut upstream_conn: TcpStream, state_lock: &RwLock<ProxyState>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
-    log::info!("Connection received from {}", client_ip);
+    log::info!("Connection received from {}", client_ip.clone());
+
+    if state_lock.read().await.max_requests_per_minute != 0 {
+        let mut state = state_lock.write().await;
+        state.request_limit_table.entry(client_ip.clone()).or_insert((timestamp!(), 0, 0));
+    }
 
     let upstream_ip = upstream_conn.peer_addr().unwrap().ip().to_string();
 
@@ -227,6 +262,24 @@ async fn handle_connection(mut client_conn: TcpStream, mut upstream_conn: TcpStr
                 continue;
             }
         };
+
+        // rate limiting
+        let limit = state_lock.read().await.max_requests_per_minute;
+        if limit != 0 {
+            let mut state = state_lock.write().await;
+            let limit_info = state.request_limit_table.get_mut(&client_ip).expect("Broken Hashmap.");
+            let percent_through = (timestamp!() - limit_info.0) as f64 / 60.0;
+            if (1.0 - percent_through) * limit_info.1 as f64 + (limit_info.2 as f64) < limit as f64 {
+                limit_info.2 += 1;
+            } else {
+                drop(state);
+                // make response
+                let response = response::make_http_error(http::StatusCode::TOO_MANY_REQUESTS);
+                send_response(&mut client_conn, &response).await;
+                continue;
+            }
+        }
+
         log::info!(
             "{} -> {}: {}",
             client_ip,
